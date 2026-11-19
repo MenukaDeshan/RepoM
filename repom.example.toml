@@ -1,0 +1,18 @@
+# RepoM configuration example
+# Copy to:
+#   Windows: %APPDATA%\repom\config.toml
+#   macOS/Linux: ~/.config/repom/config.toml
+# Or run `repom init` to generate one automatically.
+
+root = "C:/Work"
+github_user = "your-username"
+github_orgs = []          # e.g. ["veltrion"]
+token_env = "GITHUB_TOKEN" # Never store the token itself in this file
+
+[scan]
+max_depth = 3
+exclude = ["node_modules", "99_Archive", ".next", "target", ".venv", "dist", "build"]
+
+[machine]
+name = "pc"               # pc | office | personal
+skip_folders = []         # e.g. ["02_Rainco"] — skipped from scanning and reports on this machine
