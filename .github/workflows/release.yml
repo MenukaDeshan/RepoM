@@ -27,7 +27,7 @@ jobs:
       version: ${{ steps.meta.outputs.version }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Resolve version and tag
         id: meta
@@ -81,7 +81,7 @@ jobs:
             archive: tar.gz
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Linux GUI and TLS dependencies
         if: matrix.os == 'ubuntu-latest'
@@ -142,7 +142,7 @@ jobs:
           tar -czf "dist/${DIR}.tar.gz" "${DIR}"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.asset_target }}
           path: dist/*
@@ -153,7 +153,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-assets
           pattern: release-*
@@ -167,7 +167,7 @@ jobs:
           cat SHA256SUMS.txt
 
       - name: Create GitHub Release with auto-generated release notes
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
           name: RepoM ${{ needs.prepare.outputs.tag }}
