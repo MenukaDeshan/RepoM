@@ -1238,7 +1238,7 @@ impl RepoMApp {
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     if let Some(ref label) = self.busy_label {
-                        ui.spinner();
+                        ui.add(egui::Spinner::new().size(14.0).color(pal.accent));
                         ui.label(RichText::new(label).color(pal.accent).size(11.5).strong());
                     } else if let Some((ref msg, ok)) = self.toast {
                         let color = if ok { pal.green } else { pal.red };

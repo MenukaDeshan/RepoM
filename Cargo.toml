@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "Pure-Rust native desktop application to scan, monitor, and manage local Git repositories against GitHub."
 license = "MIT"
+readme = "README.md"
+repository = "https://github.com/MenukaDeshan/RepoM"
+keywords = ["git", "github", "repository", "egui", "desktop"]
+categories = ["development-tools", "gui"]
 
 [[bin]]
 name = "repom"
