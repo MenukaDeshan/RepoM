@@ -49,12 +49,15 @@ fn normalize_pattern(p: &str) -> String {
 /// - contains a `.git` file (worktree or submodule checkout)
 /// - looks like a bare git repository (`HEAD`, `objects/`, `refs/`, and `config` containing `bare = true`)
 pub fn is_git_repo_dir(dir: &Path) -> bool {
-    let dot_git = dir.join(".git");
-    if dot_git.is_dir() || dot_git.is_file() {
-        return true;
-    }
+    has_working_tree_git_marker(dir) || is_bare_git_repo_dir(dir)
+}
 
-    // Bare repository heuristic
+fn has_working_tree_git_marker(dir: &Path) -> bool {
+    let dot_git = dir.join(".git");
+    dot_git.is_dir() || dot_git.is_file()
+}
+
+fn is_bare_git_repo_dir(dir: &Path) -> bool {
     let head = dir.join("HEAD");
     let objects = dir.join("objects");
     let refs = dir.join("refs");
@@ -73,11 +76,10 @@ pub fn is_git_repo_dir(dir: &Path) -> bool {
     false
 }
 
-/// Walk `config.root` up to `config.scan.max_depth` and return all discovered git repository paths.
+/// Discover Git repositories under `config.root`. A scan depth of zero is unlimited.
 ///
 /// Guarantees:
-/// - Never descends into a discovered git repository (prevents double-counting submodules
-///   and avoids traversing large source trees).
+/// - Descends into working trees to discover nested repositories, skipping Git metadata.
 /// - Respects `config.scan.exclude` (matched against directory names) and
 ///   `config.machine.skip_folders` (matched against directory names OR relative paths from `root`).
 pub fn discover_repos(config: &Config) -> Result<Vec<PathBuf>> {
@@ -109,17 +111,12 @@ pub fn discover_repos(config: &Config) -> Result<Vec<PathBuf>> {
         .filter(|s| !s.is_empty())
         .collect();
 
-    // If the root directory itself is a git repository, just return it.
-    if is_git_repo_dir(&root) {
-        return Ok(vec![root]);
-    }
-
     let mut repos: Vec<PathBuf> = Vec::new();
-    let mut walker = WalkDir::new(&root)
-        .min_depth(1)
-        .max_depth(config.scan.max_depth)
-        .follow_links(false)
-        .into_iter();
+    let mut walk = WalkDir::new(&root).follow_links(false);
+    if config.scan.max_depth > 0 {
+        walk = walk.max_depth(config.scan.max_depth);
+    }
+    let mut walker = walk.into_iter();
 
     while let Some(entry_res) = walker.next() {
         let entry: DirEntry = match entry_res {
@@ -141,8 +138,8 @@ pub fn discover_repos(config: &Config) -> Result<Vec<PathBuf>> {
             continue;
         }
 
-        // Check `scan.exclude` against folder name
-        if exclude_names.contains(&norm_name) {
+        // Exclusions apply below the explicitly selected root.
+        if entry.depth() > 0 && exclude_names.contains(&norm_name) {
             walker.skip_current_dir();
             continue;
         }
@@ -151,19 +148,18 @@ pub fn discover_repos(config: &Config) -> Result<Vec<PathBuf>> {
         if let Ok(rel) = path.strip_prefix(&root) {
             let norm_rel = normalize_rel_for_match(rel);
             let should_skip = skip_patterns.iter().any(|pat| {
-                norm_name == *pat
-                    || norm_rel == *pat
-                    || norm_rel.starts_with(&format!("{}/", pat))
+                norm_name == *pat || norm_rel == *pat || norm_rel.starts_with(&format!("{}/", pat))
             });
-            if should_skip {
+            if entry.depth() > 0 && should_skip {
                 walker.skip_current_dir();
                 continue;
             }
         }
 
-        if is_git_repo_dir(path) {
+        if has_working_tree_git_marker(path) {
             repos.push(normalize_display_path(path));
-            // Do not descend into discovered git repositories.
+        } else if is_bare_git_repo_dir(path) {
+            repos.push(normalize_display_path(path));
             walker.skip_current_dir();
         }
     }
@@ -186,7 +182,7 @@ mod tests {
         fs::create_dir_all(root.join("alpha/.git")).unwrap();
         // Nested repo at depth 2
         fs::create_dir_all(root.join("01_Veltrion/beta/.git")).unwrap();
-        // Submodule inside beta should NOT be double-discovered
+        // Repository inside another working tree
         fs::create_dir_all(root.join("01_Veltrion/beta/submod/.git")).unwrap();
         // Skipped folder (company folder)
         fs::create_dir_all(root.join("02_Rainco/secret-repo/.git")).unwrap();
@@ -196,7 +192,11 @@ mod tests {
         fs::create_dir_all(root.join("a/b/c/too-deep/.git")).unwrap();
         // Worktree (`.git` is a file)
         fs::create_dir_all(root.join("wt-repo")).unwrap();
-        fs::write(root.join("wt-repo/.git"), "gitdir: ../alpha/.git/worktrees/wt\n").unwrap();
+        fs::write(
+            root.join("wt-repo/.git"),
+            "gitdir: ../alpha/.git/worktrees/wt\n",
+        )
+        .unwrap();
 
         let mut cfg = Config::from_root(root.to_path_buf());
         cfg.scan.max_depth = 3;
@@ -210,6 +210,18 @@ mod tests {
             .collect();
         names.sort();
 
-        assert_eq!(names, vec!["alpha", "beta", "wt-repo"]);
+        assert_eq!(names, vec!["alpha", "beta", "submod", "wt-repo"]);
+    }
+
+    #[test]
+    fn default_scan_finds_repositories_below_a_repository_root() {
+        let dir = tempdir().unwrap();
+        let root = normalize_display_path(&dir.path().canonicalize().unwrap());
+        let nested = root.join("a/b/c/d/nested");
+        fs::create_dir_all(nested.join(".git")).unwrap();
+        fs::create_dir_all(root.join(".git/metadata/.git")).unwrap();
+
+        let cfg = Config::from_root(root.clone());
+        assert_eq!(discover_repos(&cfg).unwrap(), vec![root, nested]);
     }
 }

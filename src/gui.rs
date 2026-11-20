@@ -104,6 +104,7 @@ struct SettingsDraft {
     github_user: String,
     github_orgs: String,
     token_env: String,
+    scan_all_subfolders: bool,
     max_depth: String,
     exclude: String,
     machine_name: String,
@@ -117,7 +118,12 @@ impl SettingsDraft {
             github_user: cfg.github_user.clone().unwrap_or_default(),
             github_orgs: cfg.github_orgs.join(", "),
             token_env: cfg.token_env.clone(),
-            max_depth: cfg.scan.max_depth.to_string(),
+            scan_all_subfolders: cfg.scan.max_depth == 0,
+            max_depth: if cfg.scan.max_depth == 0 {
+                "3".to_string()
+            } else {
+                cfg.scan.max_depth.to_string()
+            },
             exclude: cfg.scan.exclude.join(", "),
             machine_name: cfg.machine.name.clone(),
             skip_folders: cfg.machine.skip_folders.join(", "),
@@ -141,11 +147,15 @@ impl SettingsDraft {
         };
         next.github_orgs = split_csv(&self.github_orgs);
         next.token_env = self.token_env.trim().to_string();
-        next.scan.max_depth = self
-            .max_depth
-            .trim()
-            .parse::<usize>()
-            .map_err(|_| "Max depth must be a positive integer.".to_string())?;
+        next.scan.max_depth = if self.scan_all_subfolders {
+            0
+        } else {
+            self.max_depth
+                .trim()
+                .parse::<std::num::NonZeroUsize>()
+                .map_err(|_| "Max scan depth must be a positive integer.".to_string())?
+                .get()
+        };
         next.scan.exclude = split_csv(&self.exclude);
         next.machine.name = {
             let m = self.machine_name.trim();
@@ -2389,15 +2399,30 @@ impl RepoMApp {
                                 ui.end_row();
 
                                 ui.label(
-                                    RichText::new("Max Scan Depth")
+                                    RichText::new("Subfolder Scan")
                                         .size(12.5)
                                         .color(pal.text_secondary),
                                 );
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.settings_draft.max_depth)
-                                        .desired_width(90.0),
+                                ui.checkbox(
+                                    &mut self.settings_draft.scan_all_subfolders,
+                                    "Scan all subfolders",
                                 );
                                 ui.end_row();
+
+                                if !self.settings_draft.scan_all_subfolders {
+                                    ui.label(
+                                        RichText::new("Max Scan Depth")
+                                            .size(12.5)
+                                            .color(pal.text_secondary),
+                                    );
+                                    ui.add(
+                                        egui::TextEdit::singleline(
+                                            &mut self.settings_draft.max_depth,
+                                        )
+                                        .desired_width(90.0),
+                                    );
+                                    ui.end_row();
+                                }
 
                                 ui.label(
                                     RichText::new("Exclude Folders (CSV)")

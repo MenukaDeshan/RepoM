@@ -43,7 +43,7 @@ fn default_token_env() -> String {
 }
 
 fn default_max_depth() -> usize {
-    3
+    0
 }
 
 fn default_exclude() -> Vec<String> {
@@ -190,9 +190,6 @@ impl Config {
         if self.root.as_os_str().is_empty() {
             bail!("`root` directory cannot be empty");
         }
-        if self.scan.max_depth == 0 {
-            bail!("`scan.max_depth` must be at least 1");
-        }
         // Validate token_env looks like a safe environment variable name (never a raw token)
         if self.token_env.is_empty()
             || !self
@@ -291,7 +288,7 @@ github_orgs = []           # optional, e.g. ["veltrion"]
 token_env = "GITHUB_TOKEN" # never store the token itself in this file
 
 [scan]
-max_depth = 3
+max_depth = 0              # 0 scans all depths
 exclude = ["node_modules", "99_Archive", ".next", "target", ".venv", "dist", "build"]
 
 [machine]
