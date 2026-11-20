@@ -25,6 +25,10 @@
 
 <br>
 
+<p align="center">
+  <img src="assets/repom-dashboard.png" alt="RepoM dashboard showing local Git repository sync status with example repository names">
+</p>
+
 <table>
   <tr>
     <td width="25%" valign="top">
@@ -61,7 +65,7 @@
 ## How it works
 
 1. **Choose a workspace:** Open RepoM and point it at your projects root folder (for example `C:/Work` or `~/Work`).
-2. **Inspect local state:** RepoM walks up to `max_depth` without recursing inside discovered Git repositories, inspecting working trees, branches, ahead/behind tracking, stashes, and remotes in parallel.
+2. **Scan local repositories:** Click **Scan** when you are ready. RepoM walks up to `max_depth` without recursing inside discovered Git repositories, inspecting working trees, branches, ahead/behind tracking, stashes, and remotes in parallel.
 3. **Compare with GitHub (optional):** Toggle **GitHub Sync** in the sidebar to match local remotes against your GitHub user and organization repositories.
 4. **Act safely:** Review out-of-sync repositories, run **Fetch All**, fast-forward pull clean behind repos after confirmation, clone missing repos, or export a report.
 

@@ -264,7 +264,7 @@ impl Palette {
 }
 
 pub struct RepoMApp {
-    rt: Arc<tokio::runtime::Runtime>,
+    rt: Option<tokio::runtime::Runtime>,
     tx: Sender<BgEvent>,
     rx: Receiver<BgEvent>,
 
@@ -301,18 +301,16 @@ impl RepoMApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         configure_enterprise_fonts(&cc.egui_ctx);
 
-        let rt = Arc::new(
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .expect("failed to build Tokio runtime"),
-        );
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build Tokio runtime");
         let (tx, rx) = mpsc::channel();
         let (config, config_path) = Config::load_or_default();
         let settings_draft = SettingsDraft::from_config(&config);
 
-        let mut app = Self {
-            rt,
+        let app = Self {
+            rt: Some(rt),
             tx,
             rx,
             config,
@@ -341,8 +339,13 @@ impl RepoMApp {
         };
 
         app.apply_theme(&cc.egui_ctx);
-        app.trigger_scan(&cc.egui_ctx, false);
         app
+    }
+
+    fn spawn(&self, task: impl std::future::Future<Output = ()> + Send + 'static) {
+        if let Some(rt) = &self.rt {
+            rt.spawn(task);
+        }
     }
 
     fn effective_token(&self) -> Option<String> {
@@ -464,7 +467,7 @@ impl RepoMApp {
         let tx = self.tx.clone();
         let ctx_clone = ctx.clone();
 
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let res = run_scan_task(
                 &cfg,
                 github_enabled,
@@ -510,7 +513,7 @@ impl RepoMApp {
         let tx = self.tx.clone();
         let ctx_clone = ctx.clone();
 
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let outcomes = fetch_repos_parallel(&[path], 45).await;
             let (success, toast) = match outcomes.into_iter().next() {
                 Some((_, Ok(()))) => (true, format!("Fetched remotes for {}.", repo.name)),
@@ -551,7 +554,7 @@ impl RepoMApp {
         let tx = self.tx.clone();
         let ctx_clone = ctx.clone();
 
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let outcomes = pull_clean_repos(&targets, true, 60).await;
             let pulled = outcomes.iter().filter(|o| o.applied && o.success).count();
             let failed = outcomes.iter().filter(|o| o.applied && !o.success).count();
@@ -598,7 +601,7 @@ impl RepoMApp {
         let tx = self.tx.clone();
         let ctx_clone = ctx.clone();
 
-        self.rt.spawn(async move {
+        self.spawn(async move {
             let clone_res =
                 clone_missing_repos(&targets, &cfg.root, &cfg.root, use_ssh, true, 120).await;
             let (success, toast) = match clone_res {
@@ -1250,8 +1253,11 @@ impl RepoMApp {
                         if ui
                             .add_enabled(
                                 !is_busy,
-                                egui::Button::new(RichText::new("Rescan").size(12.0))
-                                    .min_size(Vec2::new(0.0, 30.0)),
+                                egui::Button::new(
+                                    RichText::new(if self.last_scan.is_some() { "Rescan" } else { "Scan" })
+                                        .size(12.0),
+                                )
+                                .min_size(Vec2::new(0.0, 30.0)),
                             )
                             .clicked()
                         {
@@ -1581,6 +1587,8 @@ impl RepoMApp {
                                 ui.label(
                                     RichText::new(if let Some(label) = self.busy_label.as_deref() {
                                         label
+                                    } else if self.last_scan.is_none() {
+                                        "Ready to scan your workspace"
                                     } else if self.reports.is_empty() {
                                         "No Git repositories found"
                                     } else {
@@ -1592,7 +1600,9 @@ impl RepoMApp {
                                 );
                                 if self.busy_label.is_none() {
                                     ui.add_space(4.0);
-                                    let hint = if self.reports.is_empty() {
+                                    let hint = if self.last_scan.is_none() {
+                                        "Select Scan to find local Git repositories."
+                                    } else if self.reports.is_empty() {
                                         "Check the workspace folder, scan depth, and exclusions in Settings."
                                     } else {
                                         "Try selecting 'All Repositories' in the sidebar or clearing your search."
@@ -2606,6 +2616,15 @@ impl RepoMApp {
                     self.settings_error = Some(e);
                 }
             }
+        }
+    }
+}
+
+impl Drop for RepoMApp {
+    fn drop(&mut self) {
+        if let Some(rt) = self.rt.take() {
+            // A blocking filesystem or Git inspection can outlive the window.
+            rt.shutdown_background();
         }
     }
 }
