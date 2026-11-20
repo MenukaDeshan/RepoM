@@ -16,7 +16,7 @@ use crate::actions::{
 use crate::compare::{merge_local_and_github, CompareOptions};
 use crate::config::Config;
 use crate::github::GithubClient;
-use crate::local::inspect_repos_parallel;
+use crate::local::inspect_repos_with_progress;
 use crate::model::{RepoReport, ScanOutput, Status, Summary};
 use crate::report::{format_summary_line, render_json, render_markdown, write_report_file};
 use crate::scanner::discover_repos;
@@ -79,6 +79,10 @@ enum PendingConfirm {
 
 #[derive(Debug)]
 enum BgEvent {
+    ScanDiscovered(usize),
+    ScanInspected(Box<RepoReport>),
+    ScanFetching,
+    ScanComparing,
     ScanDone {
         reports: Vec<RepoReport>,
         github_enabled: bool,
@@ -279,6 +283,7 @@ pub struct RepoMApp {
     // UI state
     dark_mode: bool,
     busy_label: Option<String>,
+    scan_total: usize,
     toast: Option<(String, bool)>,
     search: String,
     filter: StatusFilter,
@@ -321,6 +326,7 @@ impl RepoMApp {
             banner_dismissed: false,
             dark_mode: true,
             busy_label: None,
+            scan_total: 0,
             toast: None,
             search: String::new(),
             filter: StatusFilter::All,
@@ -450,13 +456,7 @@ impl RepoMApp {
             return;
         }
         self.banner_dismissed = false;
-        self.busy_label = Some(if do_fetch {
-            "Fetching remotes and scanning...".to_string()
-        } else if self.github_enabled {
-            "Scanning local repos and querying GitHub...".to_string()
-        } else {
-            "Scanning local repositories...".to_string()
-        });
+        self.busy_label = Some("Discovering local repositories...".to_string());
 
         let cfg = self.config.clone();
         let github_enabled = self.github_enabled;
@@ -465,7 +465,14 @@ impl RepoMApp {
         let ctx_clone = ctx.clone();
 
         self.rt.spawn(async move {
-            let res = run_scan_task(&cfg, github_enabled, token.as_deref(), do_fetch).await;
+            let res = run_scan_task(
+                &cfg,
+                github_enabled,
+                token.as_deref(),
+                do_fetch,
+                Some((tx.clone(), ctx_clone.clone())),
+            )
+            .await;
             match res {
                 Ok((reports, gh_err)) => {
                     let count = reports.len();
@@ -510,7 +517,7 @@ impl RepoMApp {
                 Some((_, Err(e))) => (false, format!("Fetch failed for {}: {}", repo.name, e)),
                 None => (false, "Fetch did not run.".to_string()),
             };
-            match run_scan_task(&cfg, github_enabled, token.as_deref(), false).await {
+            match run_scan_task(&cfg, github_enabled, token.as_deref(), false, None).await {
                 Ok((reports, gh_err)) => {
                     let _ = tx.send(BgEvent::ActionDone {
                         success,
@@ -557,7 +564,7 @@ impl RepoMApp {
                     pulled, skipped, failed
                 )
             };
-            match run_scan_task(&cfg, github_enabled, token.as_deref(), false).await {
+            match run_scan_task(&cfg, github_enabled, token.as_deref(), false, None).await {
                 Ok((reports, gh_err)) => {
                     let _ = tx.send(BgEvent::ActionDone {
                         success: failed == 0,
@@ -607,7 +614,7 @@ impl RepoMApp {
                 }
                 Err(err) => (false, format!("Clone blocked: {:#}", err)),
             };
-            match run_scan_task(&cfg, github_enabled, token.as_deref(), false).await {
+            match run_scan_task(&cfg, github_enabled, token.as_deref(), false, None).await {
                 Ok((reports, gh_err)) => {
                     let _ = tx.send(BgEvent::ActionDone {
                         success,
@@ -626,8 +633,34 @@ impl RepoMApp {
     }
 
     fn poll_events(&mut self) {
+        let mut reports_changed = false;
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
+                BgEvent::ScanDiscovered(total) => {
+                    self.scan_total = total;
+                    self.reports.clear();
+                    reports_changed = true;
+                    self.busy_label =
+                        Some(format!("Found {total} repositories. Checking local status..."));
+                }
+                BgEvent::ScanInspected(report) => {
+                    self.reports.push(*report);
+                    reports_changed = true;
+                    self.busy_label = Some(format!(
+                        "Checked {} of {} local repositories...",
+                        self.reports.len(),
+                        self.scan_total,
+                    ));
+                }
+                BgEvent::ScanFetching => {
+                    self.busy_label = Some(format!(
+                        "Fetching remotes for {} repositories...",
+                        self.scan_total
+                    ));
+                }
+                BgEvent::ScanComparing => {
+                    self.busy_label = Some("Comparing with GitHub...".to_string());
+                }
                 BgEvent::ScanDone {
                     reports,
                     github_enabled,
@@ -662,6 +695,9 @@ impl RepoMApp {
                     self.toast = Some((msg, false));
                 }
             }
+        }
+        if reports_changed {
+            self.summary = Summary::from_reports(&self.reports);
         }
     }
 
@@ -1136,7 +1172,8 @@ impl RepoMApp {
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .add(
+                            .add_enabled(
+                                !is_busy,
                                 egui::Button::new(RichText::new("Export MD").size(12.0))
                                     .min_size(Vec2::new(0.0, 30.0)),
                             )
@@ -1146,7 +1183,8 @@ impl RepoMApp {
                         }
 
                         if ui
-                            .add(
+                            .add_enabled(
+                                !is_busy,
                                 egui::Button::new(RichText::new("Export JSON").size(12.0))
                                     .min_size(Vec2::new(0.0, 30.0)),
                             )
@@ -1541,19 +1579,26 @@ impl RepoMApp {
                             ui.vertical_centered(|ui| {
                                 ui.add_space(avail * 0.35);
                                 ui.label(
-                                    RichText::new("No repositories match the current view")
-                                        .size(14.0)
-                                        .strong()
-                                        .color(pal.text_secondary),
+                                    RichText::new(if let Some(label) = self.busy_label.as_deref() {
+                                        label
+                                    } else if self.reports.is_empty() {
+                                        "No Git repositories found"
+                                    } else {
+                                        "No repositories match the current view"
+                                    })
+                                    .size(14.0)
+                                    .strong()
+                                    .color(pal.text_secondary),
                                 );
-                                ui.add_space(4.0);
-                                ui.label(
-                                    RichText::new(
-                                        "Try selecting 'All Repositories' in the sidebar or clearing your search.",
-                                    )
-                                    .size(12.0)
-                                    .color(pal.muted),
-                                );
+                                if self.busy_label.is_none() {
+                                    ui.add_space(4.0);
+                                    let hint = if self.reports.is_empty() {
+                                        "Check the workspace folder, scan depth, and exclusions in Settings."
+                                    } else {
+                                        "Try selecting 'All Repositories' in the sidebar or clearing your search."
+                                    };
+                                    ui.label(RichText::new(hint).size(12.0).color(pal.muted));
+                                }
                                 if self.filter != StatusFilter::All || !self.search.is_empty() {
                                     ui.add_space(10.0);
                                     if ui.button("Reset Filters").clicked() {
@@ -2502,7 +2547,8 @@ impl RepoMApp {
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
                     if ui
-                        .add(
+                        .add_enabled(
+                            self.busy_label.is_none(),
                             egui::Button::new(
                                 RichText::new("Save & Rescan")
                                     .strong()
@@ -2681,11 +2727,22 @@ async fn run_scan_task(
     enable_github: bool,
     token: Option<&str>,
     do_fetch: bool,
+    progress: Option<(Sender<BgEvent>, egui::Context)>,
 ) -> anyhow::Result<(Vec<RepoReport>, Option<String>)> {
-    let repo_paths = discover_repos(cfg)?;
+    let progress_enabled = progress.is_some();
+    let notify = move |event| {
+        if let Some((tx, ctx)) = &progress {
+            let _ = tx.send(event);
+            ctx.request_repaint();
+        }
+    };
+    let scan_cfg = cfg.clone();
+    let repo_paths = tokio::task::spawn_blocking(move || discover_repos(&scan_cfg)).await??;
+    notify(BgEvent::ScanDiscovered(repo_paths.len()));
 
     let mut fetch_errors: HashMap<PathBuf, String> = HashMap::new();
     if do_fetch && !repo_paths.is_empty() {
+        notify(BgEvent::ScanFetching);
         for (path, res) in fetch_repos_parallel(&repo_paths, 30).await {
             if let Err(err) = res {
                 fetch_errors.insert(path, format!("fetch failed: {}", err));
@@ -2693,7 +2750,15 @@ async fn run_scan_task(
         }
     }
 
-    let mut local_reports = inspect_repos_parallel(&repo_paths);
+    let inspection_notify = notify.clone();
+    let mut local_reports = tokio::task::spawn_blocking(move || {
+        inspect_repos_with_progress(&repo_paths, |report| {
+            if progress_enabled {
+                inspection_notify(BgEvent::ScanInspected(Box::new(report.clone())));
+            }
+        })
+    })
+    .await?;
     for r in &mut local_reports {
         if let Some(ref p) = r.path {
             if let Some(err) = fetch_errors.get(p) {
@@ -2706,6 +2771,7 @@ async fn run_scan_task(
 
     let mut github_error = None;
     let final_reports = if enable_github {
+        notify(BgEvent::ScanComparing);
         match GithubClient::new(token) {
             Ok(client) => match client
                 .list_all_repos(cfg.github_user.as_deref(), &cfg.github_orgs)
@@ -3081,4 +3147,37 @@ pub fn run_desktop_app() -> eframe::Result<()> {
         options,
         Box::new(|cc| Ok(Box::new(RepoMApp::new(cc)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn scan_publishes_discovery_and_each_local_report() {
+        let workspace = tempfile::tempdir().unwrap();
+        for name in ["first", "second"] {
+            git2::Repository::init(workspace.path().join(name)).unwrap();
+        }
+        let cfg = Config::from_root(workspace.path().to_path_buf());
+        let (tx, rx) = mpsc::channel();
+
+        let (reports, github_error) =
+            run_scan_task(&cfg, false, None, false, Some((tx, egui::Context::default())))
+                .await
+                .unwrap();
+
+        let mut events = rx.try_iter();
+        assert!(matches!(events.next(), Some(BgEvent::ScanDiscovered(2))));
+        let mut names: Vec<_> = events
+            .map(|event| match event {
+                BgEvent::ScanInspected(report) => report.name,
+                other => panic!("unexpected scan event: {other:?}"),
+            })
+            .collect();
+        names.sort();
+        assert_eq!(names, ["first", "second"]);
+        assert_eq!(reports.len(), 2);
+        assert!(github_error.is_none());
+    }
 }

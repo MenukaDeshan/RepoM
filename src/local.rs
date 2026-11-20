@@ -11,9 +11,20 @@ use crate::model::{sort_reports, RemoteInfo, RepoReport, Status};
 
 /// Inspect a list of local repository paths in parallel using `rayon`.
 pub fn inspect_repos_parallel(paths: &[PathBuf]) -> Vec<RepoReport> {
+    inspect_repos_with_progress(paths, |_| {})
+}
+
+pub(crate) fn inspect_repos_with_progress(
+    paths: &[PathBuf],
+    on_report: impl Fn(&RepoReport) + Sync,
+) -> Vec<RepoReport> {
     let mut reports: Vec<RepoReport> = paths
         .par_iter()
-        .map(|path| inspect_repo(path))
+        .map(|path| {
+            let report = inspect_repo(path);
+            on_report(&report);
+            report
+        })
         .collect();
     sort_reports(&mut reports);
     reports

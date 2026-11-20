@@ -6,7 +6,10 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-20
+
 ### Fixed
+- Show local repositories as their status checks complete, with scan progress and guidance when no repositories are found.
 - Fixed the bottom status bar spinner overflowing and pushing status text out of alignment during scans and Git actions.
 
 ### Added
@@ -24,5 +27,6 @@ This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) an
 - Slide-out Repository Inspector with safe `git pull --ff-only` (clean behind repos only), `git clone` (HTTPS/SSH), Explorer / VS Code / Terminal / GitHub quick actions, and JSON / Markdown report export.
 - Built-in Settings view and zero-secret TOML configuration (`token_env` validation and credential URL sanitization).
 
-[Unreleased]: https://github.com/MenukaDeshan/RepoM/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/MenukaDeshan/RepoM/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/MenukaDeshan/RepoM/releases/tag/v0.1.1
 [0.1.0]: https://github.com/MenukaDeshan/RepoM/releases/tag/v0.1.0
